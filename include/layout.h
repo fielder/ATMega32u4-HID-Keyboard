@@ -1,5 +1,7 @@
 #ifndef LAYOUT_H
 #define LAYOUT_H
+
+#if 0
 #include <stdint.h>
 #include "keys.h"
 
@@ -72,4 +74,6 @@ const uint16_t layout[3][4][12] = {
       KEY_MOD_LMETA | KEY_MOD_MACRO, KEY_SPACE, KEY_SPACE, KEY_LAYER_UP | KEY_LS_MACRO, KEY_LEFT, KEY_UP,
       KEY_DOWN, KEY_RIGHT}},
 };*/
+#endif
+
 #endif

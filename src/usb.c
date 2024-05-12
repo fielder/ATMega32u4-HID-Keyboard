@@ -1,33 +1,45 @@
-/*
-usb.c
-USB Controller initialization, device setup, and HID interrupt routines
-*/
+#ifndef F_CPU
+#error F_CPU not defined
+#endif
 
-#define F_CPU 16000000
-#include "usb.h"
 #include <avr/interrupt.h>
 #include <avr/pgmspace.h>
 #include <util/delay.h>
-#include "avr/io.h"
+#include <avr/io.h>
 
+#include "usb.h"
+#include "matrix.h"
 
-volatile uint8_t keyboard_pressed_keys[6] = {0, 0, 0, 0, 0, 0};
+/* only 6 slots available in the USB report */
+volatile uint8_t keyboard_pressed_keys[6];
+#define REPORT_KEY_SLOTS (sizeof(keyboard_pressed_keys) / sizeof(keyboard_pressed_keys[0]))
+
 volatile uint8_t keyboard_modifier = 0;
 
-static uint16_t keyboard_idle_value =
-    125;  // HID Idle setting, how often the device resends unchanging reports,
-          // we are using a scaling of 4 because of the register size
-static uint8_t current_idle =
-    0;  // Counter that updates based on how many SOFE interrupts have occurred
-static uint8_t this_interrupt =
-    0;  // This is not the best way to do it, but it
-        // is much more readable than the alternative
+// HID Idle setting, how often the device resends unchanging reports,
+// we are using a scaling of 4 because of the register size
+static uint16_t keyboard_idle_value = 125;
 
-/*  Device Descriptor - The top level descriptor when enumerating a USB device`
-        Specification: USB 2.0 (April 27, 2000) Chapter 9 Table 9-5
+// Counter that updates based on how many SOFE interrupts have occurred
+static uint8_t current_idle = 0;
 
-*/
+// This is not the best way to do it, but it
+// is much more readable than the alternative
+static uint8_t this_interrupt = 0;
 
+// This doesn't matter at all, we just need it for supporting a request
+static uint8_t keyboard_protocol;
+
+// You don't need to use this if you don't want
+// to or don't have the hardware
+static uint8_t keyboard_leds;
+
+uint8_t volatile usb_config_status = 0;
+
+/*
+ * Device Descriptor - The top level descriptor when enumerating a USB device`
+ * Specification: USB 2.0 (April 27, 2000) Chapter 9 Table 9-5
+ */
 static const uint8_t device_descriptor[] PROGMEM = {
     // Stored in PROGMEM (Program Memory) Flash, freeing up some SRAM where
     // variables are usually stored
@@ -149,7 +161,6 @@ static const uint8_t keyboard_HID_descriptor[] PROGMEM = {
    imply that the descriptors are separate entities when they are really
    dependent on each other
 */
-
 static const uint8_t configuration_descriptor[] PROGMEM = {
     9,  // bLength
     2,  // bDescriptorType - 2 is device
@@ -195,320 +206,331 @@ static const uint8_t configuration_descriptor[] PROGMEM = {
     0x01       // wInterval - Poll for new data 1000/s, or once every ms
 };
 
-int usb_init() {
-  cli();  // Global Interrupt Disable
 
-  UHWCON |= (1 << UVREGE);  // Enable USB Pads Regulator
+int usb_init()
+{
+	cli();  // Global Interrupt Disable
 
-  PLLCSR |= 0x12;  // Configure to use 16mHz oscillator
+	UHWCON |= (1 << UVREGE);  // Enable USB Pads Regulator
 
-  while (!(PLLCSR & (1 << PLOCK)))
-    ;  // Wait for PLL Lock to be achieved
+	PLLCSR |= 0x12;  // Configure to use 16mHz oscillator
 
-  USBCON |=
-      (1 << USBE) | (1 << OTGPADE);  // Enable USB Controller and USB power pads
-  USBCON &= ~(1 << FRZCLK);          // Unfreeze the clock
+	while (!(PLLCSR & (1 << PLOCK)))
+	{
+		// Wait for PLL Lock to be achieved
+	}
 
-  UDCON &= ~(1<<LSM);  // FULL SPEED MODE
-  UDCON &= ~(1<<DETACH);  // Attach USB Controller to the data bus
+	USBCON |= (1 << USBE) | (1 << OTGPADE);  // Enable USB Controller and USB power pads
+	USBCON &= ~(1 << FRZCLK);          // Unfreeze the clock
 
-  UDIEN |= (1 << EORSTE) |
-           (1 << SOFE);  // Re-enable the EORSTE (End Of Reset) Interrupt so we
-                         // know when we can configure the control endpoint
-  usb_config_status = 0;
-  sei();  // Global Interrupt Enable
-  return 0;
+	UDCON &= ~(1<<LSM);  // FULL SPEED MODE
+	UDCON &= ~(1<<DETACH);  // Attach USB Controller to the data bus
+
+	UDIEN |= (1 << EORSTE) |
+		(1 << SOFE);  // Re-enable the EORSTE (End Of Reset) Interrupt so we
+
+	// know when we can configure the control endpoint
+	usb_config_status = 0;
+	sei();  // Global Interrupt Enable
+
+	return 0;
 }
 
-int send_keypress(uint8_t key, uint8_t mod) {
-  keyboard_pressed_keys[0] = key;
-  keyboard_modifier = mod;
-  if (usb_send() < 0)
-    return -1;
-  keyboard_pressed_keys[0] = 0;
-  keyboard_modifier = 0;
-  if (usb_send() < 0)
-    return -1;
-  return 0;
+
+int usb_send()
+{
+	if (!usb_config_status)
+		return -1;  // Why are you even trying
+
+	cli();
+	UENUM = KEYBOARD_ENDPOINT_NUM;
+
+	while (!(UEINTX & (1 << RWAL)))
+	{
+		// Wait for banks to be ready
+	}
+
+	UEDATX = keyboard_modifier;
+	UEDATX = 0;
+	for (int i = 0; i < REPORT_KEY_SLOTS; i++)
+	{
+		UEDATX = keyboard_pressed_keys[i];
+	}
+
+	UEINTX = 0b00111010;
+	current_idle = 0;
+	sei();
+
+	return 0;
 }
 
-int usb_send() {
-  if (!usb_config_status)
-    return -1;  // Why are you even trying
-  cli();
-  UENUM = KEYBOARD_ENDPOINT_NUM;
 
-  while (!(UEINTX & (1 << RWAL)))
-    ;  // Wait for banks to be ready
-  UEDATX = keyboard_modifier;
-  UEDATX = 0;
-  for (int i = 0; i < 6; i++) {
-    UEDATX = keyboard_pressed_keys[i];
-  }
+ISR(USB_GEN_vect)
+{
+	uint8_t udint_temp = UDINT;
+	UDINT = 0;
 
-  UEINTX = 0b00111010;
-  current_idle = 0;
-  sei();
-  return 0;
+	if (udint_temp & (1 << EORSTI))
+	{
+		// If end of reset interrupt
+		// Configure Control Endpoint
+		UENUM = 0;             // Select Endpoint 0, the default control endpoint
+		UECONX = (1 << EPEN);  // Enable the Endpoint
+		UECFG0X = 0;      // Control Endpoint, OUT direction for control endpoint
+		UECFG1X |= 0x22;  // 32 byte endpoint, 1 bank, allocate the memory
+		usb_config_status = 0;
+
+		if (!(UESTA0X & (1 << CFGOK)))
+		{
+			// Check if endpoint configuration was successful
+			return;
+		}
+
+		UERST = 1;  // Reset Endpoint
+		UERST = 0;
+
+		UEIENX = (1 << RXSTPE);  // Re-enable the RXSPTE (Receive Setup Packet) Interrupt
+		return;
+	}
+
+	if ((udint_temp & (1 << SOFI)) && usb_config_status)
+	{
+		// Check for Start Of Frame Interrupt and correct
+		// usb configuration, send keypress if a keypress
+		// event has not been sent through usb_send
+		this_interrupt++;
+		if (keyboard_idle_value && (this_interrupt & 3) == 0)
+		{
+			// Scaling by four, trying to save memory
+			UENUM = KEYBOARD_ENDPOINT_NUM;
+			if (UEINTX & (1 << RWAL))
+			{
+				// Check if banks are writable
+				current_idle++;
+				if (current_idle == keyboard_idle_value)
+				{
+					// Have we reached the idle threshold?
+					current_idle = 0;
+					UEDATX = keyboard_modifier;
+					UEDATX = 0;
+					for (int i = 0; i < REPORT_KEY_SLOTS; i++)
+						UEDATX = keyboard_pressed_keys[i];
+					UEINTX = 0b00111010;
+				}
+			}
+		}
+	}
 }
 
-bool get_usb_config_status() {
-  return usb_config_status;
-}
 
-ISR(USB_GEN_vect) {
-  uint8_t udint_temp = UDINT;
-  UDINT = 0;
+ISR(USB_COM_vect)
+{
+	UENUM = 0;
+	if (UEINTX & (1 << RXSTPI)) {
+		uint8_t bmRequestType = UEDATX;  // UEDATX is FIFO; see table in README
+		uint8_t bRequest = UEDATX;
+		uint16_t wValue = UEDATX;
+		wValue |= UEDATX << 8;
+		uint16_t wIndex = UEDATX;
+		wIndex |= UEDATX << 8;
+		uint16_t wLength = UEDATX;
+		wLength |= UEDATX << 8;
 
-  if (udint_temp & (1 << EORSTI)) {  // If end of reset interrupt
-    // Configure Control Endpoint
-    UENUM = 0;             // Select Endpoint 0, the default control endpoint
-    UECONX = (1 << EPEN);  // Enable the Endpoint
-    UECFG0X = 0;      // Control Endpoint, OUT direction for control endpoint
-    UECFG1X |= 0x22;  // 32 byte endpoint, 1 bank, allocate the memory
-    usb_config_status = 0;
+		DDRC = 0xFF;
 
-    if (!(UESTA0X &
-          (1 << CFGOK))) {  // Check if endpoint configuration was successful
-      return;
-    }
+		UEINTX &= ~(
+				(1 << RXSTPI) | (1 << RXOUTI) |
+				(1 << TXINI));  // Handshake the Interrupts, do this after recording
+		// the packet because it also clears the endpoint banks
+		if (bRequest == GET_DESCRIPTOR) {
+			// The Host is requesting a descriptor to enumerate the device
+			const uint8_t* descriptor;
+			uint8_t descriptor_length;
 
-    UERST = 1;  // Reset Endpoint
-    UERST = 0;
+			if (wValue == 0x0100) {  // Is the host requesting a device descriptor?
+				descriptor = device_descriptor;
+				descriptor_length = pgm_read_byte(descriptor);
+			} else if (wValue ==
+					0x0200) {  // Is it asking for a configuration descriptor?
+				descriptor = configuration_descriptor;
+				descriptor_length =
+					CONFIG_SIZE;  // Configuration descriptor is comprised of many
+				// different descriptors; the length is more than
+				// bLength
+			} else if (wValue ==
+					0x2100) {  // Is it asking for a HID Report Descriptor?
+				descriptor = configuration_descriptor + HID_OFFSET;
+				descriptor_length = pgm_read_byte(descriptor);
+			} else if (wValue == 0x2200) {
+				descriptor = keyboard_HID_descriptor;
+				descriptor_length = sizeof(keyboard_HID_descriptor);
+			} else {
+				UECONX |= (1 << STALLRQ) | (1 << EPEN);  // Enable the endpoint and stall, the
+				// descriptor does not exist
+				return;
+			}
 
-    UEIENX =
-        (1 << RXSTPE);  // Re-enable the RXSPTE (Receive Setup Packet) Interrupt
-    return;
-  }
-  if ((udint_temp & (1 << SOFI)) &&
-      usb_config_status) {  // Check for Start Of Frame Interrupt and correct
-                            // usb configuration, send keypress if a keypress
-                            // event has not been sent through usb_send
-    this_interrupt++;
-    if (keyboard_idle_value &&
-        (this_interrupt & 3) == 0) {  // Scaling by four, trying to save memory
-      UENUM = KEYBOARD_ENDPOINT_NUM;
-      if (UEINTX & (1 << RWAL)) {  // Check if banks are writable
-        current_idle++;
-        if (current_idle ==
-            keyboard_idle_value) {  // Have we reached the idle threshold?
-          current_idle = 0;
-          UEDATX = keyboard_modifier;
-          UEDATX = 0;
-          for (int i = 0; i < 6; i++) {
-            UEDATX = keyboard_pressed_keys[i];
-          }
-          UEINTX = 0b00111010;
-        }
-      }
-    }
-  }
-}
+			uint8_t request_length =
+				wLength > 255 ? 255
+				: wLength;  // Our endpoint is only so big; the USB Spec
+			// says to truncate the response if the size
+			// exceeds the size of the endpoint
 
-ISR(USB_COM_vect) {
-  UENUM = 0;
-  if (UEINTX & (1 << RXSTPI)) {
-    uint8_t bmRequestType = UEDATX;  // UEDATX is FIFO; see table in README
-    uint8_t bRequest = UEDATX;
-    uint16_t wValue = UEDATX;
-    wValue |= UEDATX << 8;
-    uint16_t wIndex = UEDATX;
-    wIndex |= UEDATX << 8;
-    uint16_t wLength = UEDATX;
-    wLength |= UEDATX << 8;
+			descriptor_length =
+				request_length > descriptor_length
+				? descriptor_length
+				: request_length;  // Truncate to descriptor length at most
 
-    DDRC = 0xFF;
+			while (descriptor_length > 0) {
+				while (!(UEINTX & (1 << TXINI)))
+					;  // Wait for banks to be ready for data transmission
+				if (UEINTX & (1 << RXOUTI))
+					return;  // If there is another packet, exit to handle it
 
-    UEINTX &= ~(
-        (1 << RXSTPI) | (1 << RXOUTI) |
-        (1 << TXINI));  // Handshake the Interrupts, do this after recording
-                        // the packet because it also clears the endpoint banks
-    if (bRequest == GET_DESCRIPTOR) {
-      // The Host is requesting a descriptor to enumerate the device
-      uint8_t* descriptor;
-      uint8_t descriptor_length;
+				uint8_t thisPacket =
+					descriptor_length > 32
+					? 32
+					: descriptor_length;  // Make sure that the packet we are
+				// getting is not too big to fit in the
+				// endpoint
 
-      if (wValue == 0x0100) {  // Is the host requesting a device descriptor?
-        descriptor = device_descriptor;
-        descriptor_length = pgm_read_byte(descriptor);
-      } else if (wValue ==
-                 0x0200) {  // Is it asking for a configuration descriptor?
-        descriptor = configuration_descriptor;
-        descriptor_length =
-            CONFIG_SIZE;  // Configuration descriptor is comprised of many
-                          // different descriptors; the length is more than
-                          // bLength
-      } else if (wValue ==
-                 0x2100) {  // Is it asking for a HID Report Descriptor?
-        descriptor = configuration_descriptor + HID_OFFSET;
-        descriptor_length = pgm_read_byte(descriptor);
-      } else if (wValue == 0x2200) {
-        descriptor = keyboard_HID_descriptor;
-        descriptor_length = sizeof(keyboard_HID_descriptor);
-      } else {
-        PORTC = 0xFF;
-        UECONX |=
-            (1 << STALLRQ) | (1 << EPEN);  // Enable the endpoint and stall, the
-                                           // descriptor does not exist
-        return;
-      }
+				for (int i = 0; i < thisPacket; i++) {
+					UEDATX = pgm_read_byte(
+							descriptor +
+							i);  // Send the descriptor over UEDATX, use pgmspace functions
+					// because the descriptors are stored in flash
+				}
 
-      uint8_t request_length =
-          wLength > 255 ? 255
-                        : wLength;  // Our endpoint is only so big; the USB Spec
-                                    // says to truncate the response if the size
-                                    // exceeds the size of the endpoint
+				descriptor_length -= thisPacket;
+				descriptor += thisPacket;
+				UEINTX &= ~(1 << TXINI);
+			}
+			return;
+		}
 
-      descriptor_length =
-          request_length > descriptor_length
-              ? descriptor_length
-              : request_length;  // Truncate to descriptor length at most
+		if (bRequest == SET_CONFIGURATION &&
+				bmRequestType ==
+				0) {  // Refer to USB Spec 9.4.7 - This is the configuration request
+			// to place the device into address mode
+			usb_config_status = wValue;
+			UEINTX &= ~(1 << TXINI);
+			UENUM = KEYBOARD_ENDPOINT_NUM;
+			UECONX = 1;
+			UECFG0X = 0b11000001;  // EPTYPE Interrupt IN
+			UECFG1X = 0b00000110;  // Dual Bank Endpoint, 8 Bytes, allocate memory
+			UERST = 0x1E;          // Reset all of the endpoints
+			UERST = 0;
+			return;
+		}
 
-      while (descriptor_length > 0) {
-        while (!(UEINTX & (1 << TXINI)))
-          ;  // Wait for banks to be ready for data transmission
-        if (UEINTX & (1 << RXOUTI))
-          return;  // If there is another packet, exit to handle it
+		if (bRequest == SET_ADDRESS) {
+			UEINTX &= ~(1 << TXINI);
+			while (!(UEINTX & (1 << TXINI)))
+				;  // Wait until the banks are ready to be filled
 
-        uint8_t thisPacket =
-            descriptor_length > 32
-                ? 32
-                : descriptor_length;  // Make sure that the packet we are
-                                      // getting is not too big to fit in the
-                                      // endpoint
+			UDADDR = wValue | (1 << ADDEN);  // Set the device address
+			return;
+		}
 
-        for (int i = 0; i < thisPacket; i++) {
-          UEDATX = pgm_read_byte(
-              descriptor +
-              i);  // Send the descriptor over UEDATX, use pgmspace functions
-                   // because the descriptors are stored in flash
-        }
+		if (bRequest == GET_CONFIGURATION &&
+				bmRequestType == 0x80) {  // GET_CONFIGURATION is the host trying to get
+			// the current config status of the device
+			while (!(UEINTX & (1 << TXINI)))
+				;  // Wait until the banks are ready to be filled
+			UEDATX = usb_config_status;
+			UEINTX &= ~(1 << TXINI);
+			return;
+		}
 
-        descriptor_length -= thisPacket;
-        descriptor += thisPacket;
-        UEINTX &= ~(1 << TXINI);
-      }
-      return;
-    }
+		if (bRequest == GET_STATUS) {
+			while (!(UEINTX & (1 << TXINI)))
+				;
+			UEDATX = 0;
+			UEDATX = 0;
+			UEINTX &= ~(1 << TXINI);
+			return;
+		}
 
-    if (bRequest == SET_CONFIGURATION &&
-        bmRequestType ==
-            0) {  // Refer to USB Spec 9.4.7 - This is the configuration request
-                  // to place the device into address mode
-      usb_config_status = wValue;
-      UEINTX &= ~(1 << TXINI);
-      UENUM = KEYBOARD_ENDPOINT_NUM;
-      UECONX = 1;
-      UECFG0X = 0b11000001;  // EPTYPE Interrupt IN
-      UECFG1X = 0b00000110;  // Dual Bank Endpoint, 8 Bytes, allocate memory
-      UERST = 0x1E;          // Reset all of the endpoints
-      UERST = 0;
-      return;
-    }
+		if (wIndex == 0) {  // Is this a request to the keyboard interface for HID
+			// class-specific requests?
+			if (bmRequestType ==
+					0xA1) {  // GET Requests - Refer to the table in HID Specification 7.2
+				// - This byte specifies the data direction of the packet.
+				// Unnecessary since bRequest is unique, but it makes the
+				// code clearer
+				if (bRequest == GET_REPORT)
+				{
+					// Get the current HID report
 
-    if (bRequest == SET_ADDRESS) {
-      UEINTX &= ~(1 << TXINI);
-      while (!(UEINTX & (1 << TXINI)))
-        ;  // Wait until the banks are ready to be filled
+					while (!(UEINTX & (1 << TXINI)))
+					{
+						// Wait for the banks to be ready for transmission
+					}
 
-      UDADDR = wValue | (1 << ADDEN);  // Set the device address
-      return;
-    }
+					UEDATX = keyboard_modifier;
 
-    if (bRequest == GET_CONFIGURATION &&
-        bmRequestType == 0x80) {  // GET_CONFIGURATION is the host trying to get
-                                  // the current config status of the device
-      while (!(UEINTX & (1 << TXINI)))
-        ;  // Wait until the banks are ready to be filled
-      UEDATX = usb_config_status;
-      UEINTX &= ~(1 << TXINI);
-      return;
-    }
+					for (int i = 0; i < REPORT_KEY_SLOTS; i++)
+					{
+						// According to the spec, this method of getting the
+						// report is not used for device polling, although we
+						// still have to implement the response
+						UEDATX = keyboard_pressed_keys[i];
+					}
+					UEINTX &= ~(1 << TXINI);
+					return;
+				}
+				if (bRequest == GET_IDLE) {
+					while (!(UEINTX & (1 << TXINI)))
+						;
 
-    if (bRequest == GET_STATUS) {
-      while (!(UEINTX & (1 << TXINI)))
-        ;
-      UEDATX = 0;
-      UEDATX = 0;
-      UEINTX &= ~(1 << TXINI);
-      return;
-    }
+					UEDATX = keyboard_idle_value;
 
-    if (wIndex == 0) {  // Is this a request to the keyboard interface for HID
-                        // class-specific requests?
-      if (bmRequestType ==
-          0xA1) {  // GET Requests - Refer to the table in HID Specification 7.2
-                   // - This byte specifies the data direction of the packet.
-                   // Unnecessary since bRequest is unique, but it makes the
-                   // code clearer
-        if (bRequest == GET_REPORT) {  // Get the current HID report
-          while (!(UEINTX & (1 << TXINI)))
-            ;  // Wait for the banks to be ready for transmission
-          UEDATX = keyboard_modifier;
+					UEINTX &= ~(1 << TXINI);
+					return;
+				}
+				if (bRequest == GET_PROTOCOL) {
+					while (!(UEINTX & (1 << TXINI)))
+						;
 
-          for (int i = 0; i < 6; i++) {
-            UEDATX = keyboard_pressed_keys
-                [i];  // According to the spec, this method of getting the
-                      // report is not used for device polling, although we
-                      // still have to implement the response
-          }
-          UEINTX &= ~(1 << TXINI);
-          return;
-        }
-        if (bRequest == GET_IDLE) {
-          while (!(UEINTX & (1 << TXINI)))
-            ;
+					UEDATX = keyboard_protocol;
 
-          UEDATX = keyboard_idle_value;
+					UEINTX &= ~(1 << TXINI);
+					return;
+				}
+			}
 
-          UEINTX &= ~(1 << TXINI);
-          return;
-        }
-        if (bRequest == GET_PROTOCOL) {
-          while (!(UEINTX & (1 << TXINI)))
-            ;
+			if (bmRequestType ==
+					0x21) {  // SET Requests - Host-to-device data direction
+				if (bRequest == SET_REPORT) {
+					while (!(UEINTX & (1 << RXOUTI)))
+						;  // This is the opposite of the TXINI one, we are waiting until
+					// the banks are ready for reading instead of for writing
+					keyboard_leds = UEDATX;
 
-          UEDATX = keyboard_protocol;
+					UEINTX &= ~(1 << TXINI);  // Send ACK and clear TX bit
+					UEINTX &= ~(1 << RXOUTI);
+					return;
+				}
+				if (bRequest == SET_IDLE) {
+					keyboard_idle_value = wValue;
+					current_idle = 0;
+					UEINTX &= ~(1 << TXINI);  // Send ACK and clear TX bit
+					return;
+				}
+				if (bRequest == SET_PROTOCOL) {  // This request is only mandatory for boot devices,
+					// and this is a boot device
+					keyboard_protocol = wValue >> 8;  // Nobody cares what happens to this, arbitrary cast
+					// from 16 bit to 8 bit doesn't matter
 
-          UEINTX &= ~(1 << TXINI);
-          return;
-        }
-      }
+					UEINTX &= ~(1 << TXINI);  // Send ACK and clear TX bit
+					return;
+				}
+			}
+		}
+	}
 
-      if (bmRequestType ==
-          0x21) {  // SET Requests - Host-to-device data direction
-        if (bRequest == SET_REPORT) {
-          while (!(UEINTX & (1 << RXOUTI)))
-            ;  // This is the opposite of the TXINI one, we are waiting until
-               // the banks are ready for reading instead of for writing
-          keyboard_leds = UEDATX;
+	UECONX |= (1 << STALLRQ) |
+		(1 << EPEN);  // The host made an invalid request or there was an
 
-          UEINTX &= ~(1 << TXINI);  // Send ACK and clear TX bit
-          UEINTX &= ~(1 << RXOUTI);
-          return;
-        }
-        if (bRequest == SET_IDLE) {
-          keyboard_idle_value = wValue;  //
-          current_idle = 0;
-
-          UEINTX &= ~(1 << TXINI);  // Send ACK and clear TX bit
-          return;
-        }
-        if (bRequest ==
-            SET_PROTOCOL) {  // This request is only mandatory for boot devices,
-                             // and this is a boot device
-          keyboard_protocol =
-              wValue >> 8;  // Nobody cares what happens to this, arbitrary cast
-                            // from 16 bit to 8 bit doesn't matter
-
-          UEINTX &= ~(1 << TXINI);  // Send ACK and clear TX bit
-          return;
-        }
-      }
-    }
-  }
-  PORTC = 0xFF;
-  UECONX |= (1 << STALLRQ) |
-            (1 << EPEN);  // The host made an invalid request or there was an
-                          // error with one of the request parameters
+	// error with one of the request parameters
 }

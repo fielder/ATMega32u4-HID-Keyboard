@@ -1,31 +1,51 @@
-/*
-main.c
-*/
+#ifndef F_CPU
+#error F_CPU not defined
+#endif
 
-#define F_CPU 16000000
+#include <stdint.h>
 
 #include <avr/io.h>
-#include <string.h>
 #include <util/delay.h>
+
 #include "matrix.h"
 #include "usb.h"
 
-int main(int argc, char** argv) {
-  usb_init();
 
-  DDRC |= ((1 << 7) | (1 << 6));
+int
+main (int argc, const char **argv)
+{
+	usb_init();
 
-  while (!get_usb_config_status()) {
-    // LED Animation
-    PORTC &= ~(1 << 6);
-    PORTC |= (1 << 7);
-    _delay_ms(100);
-    PORTC &= ~(1 << 7);
-    PORTC |= (1 << 6);
-    _delay_ms(100);
-  }
-  PORTC &= ~((1 << 6) | (1 << 7));
+	// outputs
+	DDRC = _BV(PC7);
 
-  matrix_init();
-	while(1) do_matrix_scan(); // Scan the matrix
+	// disable pull-ups
+	PORTC = 0x0;
+
+	// enable pull-ups
+	PORTD |= _BV(PD2);
+
+	/* blink LED until USB is set up */
+	_delay_ms (50);
+	uint8_t onoff = 1;
+	while (!usb_config_status)
+	{
+		onoff = !onoff;
+		if (onoff)	PORTC |= _BV(PC7);
+		else		PORTC &= ~_BV(PC7);
+		_delay_ms (50);
+	}
+	PORTC &= ~_BV(PC7); /* turn LED off */
+
+	matrix_init();
+	while (1)
+	{
+		do_matrix_scan();
+
+		// uint8_t pressed = !(PIND & _BV(PIND2));
+		// if (pressed) PORTC |= _BV(PC7);
+		// else PORTC &= ~_BV(PC7);
+	}
+
+	return 0;
 }

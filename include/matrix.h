@@ -1,12 +1,14 @@
-#ifndef MATRIX_H
-#define MATRIX_H
+#ifndef __MATRIX_H__
+#define __MATRIX_H__
 
-#include <stdbool.h>
+#include <stdint.h>
 
-#define NUM_ROWS 4
-#define NUM_COLS 12
-#define B_OFFSET 4  // PORTB does not start at 0, 0-3 is used for ICSP
+extern uint8_t key_pressed;
 
-void matrix_init();
-void do_matrix_scan();
-#endif
+void
+matrix_init ();
+
+void
+do_matrix_scan ();
+
+#endif /* __MATRIX_H__ */
