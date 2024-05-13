@@ -10,9 +10,7 @@
 #include "usb.h"
 #include "matrix.h"
 
-/* only 6 slots available in the USB report */
 volatile uint8_t keyboard_pressed_keys[6];
-#define REPORT_KEY_SLOTS (sizeof(keyboard_pressed_keys) / sizeof(keyboard_pressed_keys[0]))
 
 volatile uint8_t keyboard_modifier = 0;
 

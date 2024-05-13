@@ -13,69 +13,84 @@
 #include "usb.h"
 #include "keys.h"
 
-#if 0
-static int layout_num = 0;
-#endif
 static bool has_unsent_packets = false;
 
-#if 0
-// Key States to do state changes
-bool state_layer[NUM_ROWS][NUM_COLS] = {
-    {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
-    {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
-    {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
-    {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}
+uint8_t snes_pressed[SNES_CNT];
+static uint8_t old_snes_pressed[SNES_CNT];
+
+/*
+ * SNES		PC
+ * -------------------
+ * B		C
+ * Y		X
+ * Select	enter
+ * Start	space
+ * Up		up
+ * Down		down
+ * Left		left
+ * Right	right
+ * A		V
+ * X		D
+ * L		A
+ * R		S
+ */
+const uint8_t mapping[SNES_CNT] = {
+	KEY_C,
+	KEY_X,
+	KEY_ENTER,
+	KEY_SPACE,
+	KEY_UP,
+	KEY_DOWN,
+	KEY_LEFT,
+	KEY_RIGHT,
+	KEY_V,
+	KEY_D,
+	KEY_A,
+	KEY_S,
 };
-#endif
-uint8_t key_pressed = 0;
 
 
 void
 matrix_init ()
 {
-#if 0
-	DDRD = 0xFF;   // Configure the first 7 rows as outputs
-	DDRF = 0xFF;   // Configure the last 5 as outputs
-	PORTF = 0xFF;  // The logic is inverted, being pulled low is a keypress
-	PORTD = 0xFF;
-
-	DDRB &= 0;     // Configure the row port as inputs
-	PORTB = 0xFF;  // Enable the Pull up resistors
-#endif
-
 	TCCR0B |= (1 << CS00) | (1 << CS02); // Set up the 1024 prescaler on timer 0
 	TCCR0A = (1 << WGM01); // Set the timer to compare mode
 	OCR0A = 255; // Set the compare value to max for a lower frequency
 	TIMSK0 = (1 << OCIE0A); // Enable timer compare interrupts
-}
 
-
-void
-do_layer_led ()
-{
-#if 0
-	PORTC = layout_num << 6;
-#endif
+	for (uint8_t i = 0; i < SNES_CNT; i++)
+	{
+		snes_pressed[i] = 0;
+		old_snes_pressed[i] = 0;
+	}
 }
 
 
 void
 do_matrix_scan ()
 {
-	uint8_t old = key_pressed;
-	key_pressed = !(PIND & _BV(PIND2));
+	uint8_t outidx = 0;
 
-	if (key_pressed != old)
+	cli ();
+	for (uint8_t i = 0; i < SNES_CNT; i++)
 	{
-		cli ();
-		if (key_pressed)
-			keyboard_pressed_keys[0] = KEY_A;
-		else
-			keyboard_pressed_keys[0] = 0;
-		/* Let the timer interrupt know that we've got some packets to be sent */
-		has_unsent_packets = true;
-		sei ();
+		uint8_t cur = snes_pressed[i];
+		uint8_t old = old_snes_pressed[i];
+		old_snes_pressed[i] = cur;
+		if (cur != old)
+		{
+			/* Let the timer interrupt know that we've got some packets to be sent */
+			has_unsent_packets = true;
+		}
+		if (cur)
+		{
+			if (outidx < REPORT_KEY_SLOTS)
+				keyboard_pressed_keys[outidx++] = mapping[i];
+		}
 	}
+	while (outidx < REPORT_KEY_SLOTS)
+		keyboard_pressed_keys[outidx++] = KEY_NONE;
+	sei ();
 
 #if 0
 	for (int i = 0; i < NUM_ROWS; i++)

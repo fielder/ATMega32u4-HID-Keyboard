@@ -4,7 +4,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-extern volatile uint8_t keyboard_pressed_keys[];
+/* only 6 slots available in the USB report */
+extern volatile uint8_t keyboard_pressed_keys[6];
+#define REPORT_KEY_SLOTS (sizeof(keyboard_pressed_keys) / sizeof(keyboard_pressed_keys[0]))
 extern volatile uint8_t keyboard_modifier;
 extern volatile uint8_t usb_config_status;
 
