@@ -10,9 +10,9 @@
 #include "usb.h"
 #include "matrix.h"
 
-volatile uint8_t keyboard_pressed_keys[6];
-
-volatile uint8_t keyboard_modifier = 0;
+volatile uint8_t usb_keyboard_pressed_keys[6];
+volatile uint8_t usb_keyboard_modifier = 0;
+volatile uint8_t usb_config_status = 0;
 
 // HID Idle setting, how often the device resends unchanging reports,
 // we are using a scaling of 4 because of the register size
@@ -31,8 +31,6 @@ static uint8_t keyboard_protocol;
 // You don't need to use this if you don't want
 // to or don't have the hardware
 static uint8_t keyboard_leds;
-
-uint8_t volatile usb_config_status = 0;
 
 /*
  * Device Descriptor - The top level descriptor when enumerating a USB device`
@@ -248,14 +246,12 @@ int usb_send()
 		// Wait for banks to be ready
 	}
 
-	UEDATX = keyboard_modifier;
+	UEDATX = usb_keyboard_modifier;
 	UEDATX = 0;
 	for (int i = 0; i < REPORT_KEY_SLOTS; i++)
-	{
-		UEDATX = keyboard_pressed_keys[i];
-	}
-
+		UEDATX = usb_keyboard_pressed_keys[i];
 	UEINTX = 0b00111010;
+
 	current_idle = 0;
 	sei();
 
@@ -309,10 +305,11 @@ ISR(USB_GEN_vect)
 				{
 					// Have we reached the idle threshold?
 					current_idle = 0;
-					UEDATX = keyboard_modifier;
+
+					UEDATX = usb_keyboard_modifier;
 					UEDATX = 0;
 					for (int i = 0; i < REPORT_KEY_SLOTS; i++)
-						UEDATX = keyboard_pressed_keys[i];
+						UEDATX = usb_keyboard_pressed_keys[i];
 					UEINTX = 0b00111010;
 				}
 			}
@@ -465,16 +462,17 @@ ISR(USB_COM_vect)
 						// Wait for the banks to be ready for transmission
 					}
 
-					UEDATX = keyboard_modifier;
-
+					UEDATX = usb_keyboard_modifier;
+					// FIXME: need to set the reserved byte like in the other spots ??
 					for (int i = 0; i < REPORT_KEY_SLOTS; i++)
 					{
 						// According to the spec, this method of getting the
 						// report is not used for device polling, although we
 						// still have to implement the response
-						UEDATX = keyboard_pressed_keys[i];
+						UEDATX = usb_keyboard_pressed_keys[i];
 					}
 					UEINTX &= ~(1 << TXINI);
+
 					return;
 				}
 				if (bRequest == GET_IDLE) {

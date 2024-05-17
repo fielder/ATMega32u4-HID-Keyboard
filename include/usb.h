@@ -1,17 +1,19 @@
 #ifndef __USB_H__
 #define __USB_H__
 
-#include <stdbool.h>
 #include <stdint.h>
 
 /* only 6 slots available in the USB report */
-extern volatile uint8_t keyboard_pressed_keys[6];
-#define REPORT_KEY_SLOTS (sizeof(keyboard_pressed_keys) / sizeof(keyboard_pressed_keys[0]))
-extern volatile uint8_t keyboard_modifier;
+extern volatile uint8_t usb_keyboard_pressed_keys[6];
+#define REPORT_KEY_SLOTS (sizeof(usb_keyboard_pressed_keys) / sizeof(usb_keyboard_pressed_keys[0]))
+extern volatile uint8_t usb_keyboard_modifier;
 extern volatile uint8_t usb_config_status;
 
-int usb_init ();
-int usb_send ();
+int
+usb_init ();
+
+int
+usb_send ();
 
 #define GET_STATUS 0x00
 #define CLEAR_FEATURE 0x01
